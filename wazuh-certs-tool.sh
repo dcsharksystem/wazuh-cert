@@ -3,17 +3,25 @@
 # Wazuh installer
 # Copyright (C) 2015, Wazuh Inc.
 #
-# Shark Cyber System and DC Networks Joint venture
-base_path="$(dirname "$(readlink -f "$0")")"
-readonly base_path
+# This program is a free software; you can redistribute it
+# and/or modify it under the terms of the GNU General Public
+# License (version 2) as published by the FSF - Free Software
+# Foundation.
+adminpem="/etc/wazuh-indexer/certs/admin.pem"
+adminkey="/etc/wazuh-indexer/certs/admin-key.pem"
+readonly base_path="$(dirname "$(readlink -f "$0")")"
 readonly config_file="${base_path}/config.yml"
-readonly logfile=""
+readonly logfile="${base_path}/wazuh-certificates-tool.log"
 cert_tmp_path="/tmp/wazuh-certificates"
-debug=">> /dev/null 2>&1"
+debug=">> ${logfile} 2>&1"
+readonly cert_tool_script_name=".*certs.*\.sh"
 
-# ------------ certFunctions.sh ------------ 
+# ------------ certVariables.sh ------------
+
+# ------------ certFunctions.sh ------------
 function cert_cleanFiles() {
 
+    common_logger -d "Cleaning certificate files."
     eval "rm -f ${cert_tmp_path}/*.csr ${debug}"
     eval "rm -f ${cert_tmp_path}/*.srl ${debug}"
     eval "rm -f ${cert_tmp_path}/*.conf ${debug}"
@@ -22,6 +30,8 @@ function cert_cleanFiles() {
 }
 function cert_checkOpenSSL() {
 
+    common_logger -d "Checking if OpenSSL is installed."
+
     if [ -z "$(command -v openssl)" ]; then
         common_logger -e "OpenSSL not installed."
         exit 1
@@ -29,6 +39,8 @@ function cert_checkOpenSSL() {
 
 }
 function cert_checkRootCA() {
+
+    common_logger -d "Checking if the root CA exists."
 
     if  [[ -n ${rootca} || -n ${rootcakey} ]]; then
         # Verify variables match keys
@@ -57,16 +69,36 @@ function cert_checkRootCA() {
     fi
 
 }
+function cert_executeAndValidate() {
+
+    command_output=$(eval "$@" 2>&1)
+    e_code="${PIPESTATUS[0]}"
+
+    if [ "${e_code}" -ne 0 ]; then
+        common_logger -e "Error generating the certificates."
+        common_logger -d "Error executing command: $@"
+        common_logger -d "Error output: ${command_output}"
+        cert_cleanFiles
+        exit 1
+    fi
+
+}
 function cert_generateAdmincertificate() {
 
-    eval "openssl genrsa -out ${cert_tmp_path}/admin-key-temp.pem 2048 ${debug}"
-    eval "openssl pkcs8 -inform PEM -outform PEM -in ${cert_tmp_path}/admin-key-temp.pem -topk8 -nocrypt -v1 PBE-SHA1-3DES -out ${cert_tmp_path}/admin-key.pem ${debug}"
-    eval "openssl req -new -key ${cert_tmp_path}/admin-key.pem -out ${cert_tmp_path}/admin.csr -batch -subj '/C=IN/L=Ahmedabad/O=DCnetworks/OU=DCnetworks/CN=admin' ${debug}"
-    eval "openssl x509 -days 3650 -req -in ${cert_tmp_path}/admin.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -sha256 -out ${cert_tmp_path}/admin.pem ${debug}"
+    common_logger "Generating Admin certificates."
+    common_logger -d "Generating Admin private key."
+    cert_executeAndValidate "openssl genrsa -out ${cert_tmp_path}/admin-key-temp.pem 2048"
+    common_logger -d "Converting Admin private key to PKCS8 format."
+    cert_executeAndValidate "openssl pkcs8 -inform PEM -outform PEM -in ${cert_tmp_path}/admin-key-temp.pem -topk8 -nocrypt -v1 PBE-SHA1-3DES -out ${cert_tmp_path}/admin-key.pem"
+    common_logger -d "Generating Admin CSR."
+    cert_executeAndValidate "openssl req -new -key ${cert_tmp_path}/admin-key.pem -out ${cert_tmp_path}/admin.csr -batch -subj '/C=IN/L=Ahmedabad/O=DC-Networks/OU=Security/CN=admin'"
+    common_logger -d "Creating Admin certificate."
+    cert_executeAndValidate "openssl x509 -days 3650 -req -in ${cert_tmp_path}/admin.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -sha256 -out ${cert_tmp_path}/admin.pem"
 
 }
 function cert_generateCertificateconfiguration() {
 
+    common_logger -d "Generating certificate configuration."
     cat > "${cert_tmp_path}/${1}.conf" <<- EOF
         [ req ]
         prompt = no
@@ -78,8 +110,8 @@ function cert_generateCertificateconfiguration() {
         [req_distinguished_name]
         C = IN
         L = Ahmedabad
-        O = DCnetworks
-        OU = DCnetworks
+        O = DC-Networks
+        OU = Security
         CN = cname
 
         [ v3_req ]
@@ -89,19 +121,18 @@ function cert_generateCertificateconfiguration() {
         subjectAltName = @alt_names
 
         [alt_names]
-        IP.1 = ${2}
-        DNS.1 = ${1}
-	EOF
+        IP.1 = cip
+        EOF
 
 
     conf="$(awk '{sub("CN = cname", "CN = '"${1}"'")}1' "${cert_tmp_path}/${1}.conf")"
     echo "${conf}" > "${cert_tmp_path}/${1}.conf"
 
-    if [ "${#@}" -gt 2 ]; then
-        for (( i=3; i<=${#@}; i++ )); do
+    if [ "${#@}" -gt 1 ]; then
+        sed -i '/IP.1/d' "${cert_tmp_path}/${1}.conf"
+        for (( i=2; i<=${#@}; i++ )); do
             isIP=$(echo "${!i}" | grep -P "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$")
-            isDNS=$(echo "${!i}" | grep -P "^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9](?:\.[a-zA-Z-]{2,})+$" )
-            j=$((i-2))
+            isDNS=$(echo "${!i}" | grep -P "^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])\.([A-Za-z]{2,})$" )            j=$((i-1))
             if [ "${isIP}" ]; then
                 printf '%s\n' "        IP.${j} = ${!i}" >> "${cert_tmp_path}/${1}.conf"
             elif [ "${isDNS}" ]; then
@@ -111,18 +142,25 @@ function cert_generateCertificateconfiguration() {
                 exit 1
             fi
         done
+    else
+        common_logger -e "No IP or DNS specified"
+        exit 1
     fi
+
 }
 function cert_generateIndexercertificates() {
 
     if [ ${#indexer_node_names[@]} -gt 0 ]; then
-        common_logger -d "Creating the Wazuh indexer certificates."
+        common_logger "Generating Wazuh indexer certificates."
 
         for i in "${!indexer_node_names[@]}"; do
             indexer_node_name=${indexer_node_names[$i]}
+            common_logger -d "Creating the certificates for ${indexer_node_name} indexer node."
             cert_generateCertificateconfiguration "${indexer_node_name}" "${indexer_node_ips[i]}"
-            eval "openssl req -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/${indexer_node_name}-key.pem -out ${cert_tmp_path}/${indexer_node_name}.csr -config ${cert_tmp_path}/${indexer_node_name}.conf -days 3650 ${debug}"
-            eval "openssl x509 -req -in ${cert_tmp_path}/${indexer_node_name}.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -out ${cert_tmp_path}/${indexer_node_name}.pem -extfile ${cert_tmp_path}/${indexer_node_name}.conf -extensions v3_req -days 3650 ${debug}"
+            common_logger -d "Creating the Wazuh indexer tmp key pair."
+            cert_executeAndValidate "openssl req -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/${indexer_node_name}-key.pem -out ${cert_tmp_path}/${indexer_node_name}.csr -config ${cert_tmp_path}/${indexer_node_name}.conf"
+            common_logger -d "Creating the Wazuh indexer certificates."
+            cert_executeAndValidate "openssl x509 -req -in ${cert_tmp_path}/${indexer_node_name}.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -out ${cert_tmp_path}/${indexer_node_name}.pem -extfile ${cert_tmp_path}/${indexer_node_name}.conf -extensions v3_req -days 3650"
         done
     else
         return 1
@@ -132,15 +170,18 @@ function cert_generateIndexercertificates() {
 function cert_generateFilebeatcertificates() {
 
     if [ ${#server_node_names[@]} -gt 0 ]; then
-        common_logger -d "Creating the Wazuh server certificates."
+        common_logger "Generating Filebeat certificates."
 
         for i in "${!server_node_names[@]}"; do
             server_name="${server_node_names[i]}"
+            common_logger -d "Generating the certificates for ${server_name} server node."
             j=$((i+1))
             declare -a server_ips=(server_node_ip_"$j"[@])
             cert_generateCertificateconfiguration "${server_name}" "${!server_ips}"
-            eval "openssl req -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/${server_name}-key.pem -out ${cert_tmp_path}/${server_name}.csr  -config ${cert_tmp_path}/${server_name}.conf -days 3650 ${debug}"
-            eval "openssl x509 -req -in ${cert_tmp_path}/${server_name}.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -out ${cert_tmp_path}/${server_name}.pem -extfile ${cert_tmp_path}/${server_name}.conf -extensions v3_req -days 3650 ${debug}"
+            common_logger -d "Creating the Wazuh server tmp key pair."
+            cert_executeAndValidate "openssl req -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/${server_name}-key.pem -out ${cert_tmp_path}/${server_name}.csr  -config ${cert_tmp_path}/${server_name}.conf"
+            common_logger -d "Creating the Wazuh server certificates."
+            cert_executeAndValidate "openssl x509 -req -in ${cert_tmp_path}/${server_name}.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -out ${cert_tmp_path}/${server_name}.pem -extfile ${cert_tmp_path}/${server_name}.conf -extensions v3_req -days 3650"
         done
     else
         return 1
@@ -148,15 +189,16 @@ function cert_generateFilebeatcertificates() {
 
 }
 function cert_generateDashboardcertificates() {
-
     if [ ${#dashboard_node_names[@]} -gt 0 ]; then
-        common_logger -d "Creating the Wazuh dashboard certificates."
+        common_logger "Generating Wazuh dashboard certificates."
 
         for i in "${!dashboard_node_names[@]}"; do
             dashboard_node_name="${dashboard_node_names[i]}"
             cert_generateCertificateconfiguration "${dashboard_node_name}" "${dashboard_node_ips[i]}"
-            eval "openssl req -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/${dashboard_node_name}-key.pem -out ${cert_tmp_path}/${dashboard_node_name}.csr -config ${cert_tmp_path}/${dashboard_node_name}.conf -days 3650 ${debug}"
-            eval "openssl x509 -req -in ${cert_tmp_path}/${dashboard_node_name}.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -out ${cert_tmp_path}/${dashboard_node_name}.pem -extfile ${cert_tmp_path}/${dashboard_node_name}.conf -extensions v3_req -days 3650 ${debug}"
+            common_logger -d "Creating the Wazuh dashboard tmp key pair."
+            cert_executeAndValidate "openssl req -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/${dashboard_node_name}-key.pem -out ${cert_tmp_path}/${dashboard_node_name}.csr -config ${cert_tmp_path}/${dashboard_node_name}.conf"
+            common_logger -d "Creating the Wazuh dashboard certificates."
+            cert_executeAndValidate "openssl x509 -req -in ${cert_tmp_path}/${dashboard_node_name}.csr -CA ${cert_tmp_path}/root-ca.pem -CAkey ${cert_tmp_path}/root-ca.key -CAcreateserial -out ${cert_tmp_path}/${dashboard_node_name}.pem -extfile ${cert_tmp_path}/${dashboard_node_name}.conf -extensions v3_req -days 3650"
         done
     else
         return 1
@@ -165,9 +207,8 @@ function cert_generateDashboardcertificates() {
 }
 function cert_generateRootCAcertificate() {
 
-    common_logger -d "Creating the root certificate."
-
-    eval "openssl req -x509 -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/root-ca.key -out ${cert_tmp_path}/root-ca.pem -batch -subj '/OU=Wazuh/O=Wazuh/L=California/' -days 3650 ${debug}"
+    common_logger "Generating the root certificate."
+    cert_executeAndValidate "openssl req -x509 -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/root-ca.key -out ${cert_tmp_path}/root-ca.pem -batch -subj '/OU=Security/O=DC-Network/L=Ahmedabad/' -days 3650"
 
 }
 function cert_parseYaml() {
@@ -186,7 +227,7 @@ function cert_parseYaml() {
 
     local s='[[:space:]]*' sm='[ \t]*' w='[a-zA-Z0-9_]*' fs=${fs:-$(echo @|tr @ '\034')} i=${i:-  }
     cat $1 2>/dev/null | \
-    awk -F$fs "{multi=0; 
+    awk -F$fs "{multi=0;
         if(match(\$0,/$sm\|$sm$/)){multi=1; sub(/$sm\|$sm$/,\"\");}
         if(match(\$0,/$sm>$sm$/)){multi=2; sub(/$sm>$sm$/,\"\");}
         while(multi>0){
@@ -284,7 +325,27 @@ function cert_parseYaml() {
     }"
 
 }
+function cert_checkPrivateIp() {
+
+    local ip=$1
+    common_logger -d "Checking if ${ip} is private."
+
+    # Check private IPv4 ranges
+    if [[ $ip =~ ^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\.|^(127\.) ]]; then
+        return 0
+    fi
+
+    # Check private IPv6 ranges (fc00::/7 prefix)
+    if [[ $ip =~ ^fc ]]; then
+        return 0
+    fi
+
+    return 1
+
+}
 function cert_readConfig() {
+
+    common_logger -d "Reading configuration file."
 
     if [ -f "${config_file}" ]; then
         if [ ! -s "${config_file}" ]; then
@@ -301,6 +362,17 @@ function cert_readConfig() {
         eval "dashboard_node_ips=( $(cert_parseYaml "${config_file}"  | grep -E "nodes[_]+dashboard[_]+[0-9]+[_]+ip=" | cut -d = -f 2 ) )"
         eval "server_node_types=( $(cert_parseYaml "${config_file}"  | grep -E "nodes[_]+server[_]+[0-9]+[_]+node_type=" | cut -d = -f 2 ) )"
         eval "number_server_ips=( $(cert_parseYaml "${config_file}" | grep -o -E 'nodes[_]+server[_]+[0-9]+[_]+ip' | sort -u | wc -l) )"
+        all_ips=("${indexer_node_ips[@]}" "${server_node_ips[@]}" "${dashboard_node_ips[@]}")
+
+        for ip in "${all_ips[@]}"; do
+            isIP=$(echo "${ip}" | grep -P "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$")
+            if [[ -n "${isIP}" ]]; then
+                if ! cert_checkPrivateIp "$ip"; then
+                    common_logger -e "The IP ${ip} is public."
+                    exit 1
+                fi
+            fi
+        done
 
         for i in $(seq 1 "${number_server_ips}"); do
             nodes_server="nodes[_]+server[_]+${i}[_]+ip"
@@ -308,25 +380,25 @@ function cert_readConfig() {
         done
 
         unique_names=($(echo "${indexer_node_names[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_names[@]}" -ne "${#indexer_node_names[@]}" ]; then 
+        if [ "${#unique_names[@]}" -ne "${#indexer_node_names[@]}" ]; then
             common_logger -e "Duplicated indexer node names."
             exit 1
         fi
 
         unique_ips=($(echo "${indexer_node_ips[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_ips[@]}" -ne "${#indexer_node_ips[@]}" ]; then 
+        if [ "${#unique_ips[@]}" -ne "${#indexer_node_ips[@]}" ]; then
             common_logger -e "Duplicated indexer node ips."
             exit 1
         fi
 
         unique_names=($(echo "${server_node_names[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_names[@]}" -ne "${#server_node_names[@]}" ]; then 
+        if [ "${#unique_names[@]}" -ne "${#server_node_names[@]}" ]; then
             common_logger -e "Duplicated Wazuh server node names."
             exit 1
         fi
 
         unique_ips=($(echo "${server_node_ips[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_ips[@]}" -ne "${#server_node_ips[@]}" ]; then 
+        if [ "${#unique_ips[@]}" -ne "${#server_node_ips[@]}" ]; then
             common_logger -e "Duplicated Wazuh server node ips."
             exit 1
         fi
@@ -385,14 +457,14 @@ function cert_setpermisions() {
 }
 function cert_convertCRLFtoLF() {
     if [[ ! -d "/tmp/wazuh-install-files" ]]; then
-        mkdir "/tmp/wazuh-install-files"
+        eval "mkdir /tmp/wazuh-install-files ${debug}"
     fi
     eval "chmod -R 755 /tmp/wazuh-install-files ${debug}"
     eval "tr -d '\015' < $1 > /tmp/wazuh-install-files/new_config.yml"
-    eval "mv /tmp/wazuh-install-files/new_config.yml $1"
+    eval "mv /tmp/wazuh-install-files/new_config.yml $1 ${debug}"
 }
 
-# ------------ certMain.sh ------------ 
+# ------------ certMain.sh ------------
 function getHelp() {
 
     echo -e ""
@@ -462,7 +534,7 @@ function main() {
                             common_logger -e "You have not entered a root-ca.pem"
                             exit 1
                         else
-                            common_logger -e "You have not entered a root-ca.key" 
+                            common_logger -e "You have not entered a root-ca.key"
                             exit 1
                         fi
                     fi
@@ -544,13 +616,15 @@ function main() {
             esac
         done
 
+        common_logger "Verbose logging redirected to ${logfile}"
+
         if [[ -d "${base_path}"/wazuh-certificates ]]; then
             if [ -n "$(ls -A "${base_path}"/wazuh-certificates)" ]; then
                 common_logger -e "Directory wazuh-certificates already exists in the same path as the script. Please, remove the certs directory to create new certificates."
                 exit 1
             fi
         fi
-        
+
         if [[ ! -d "${cert_tmp_path}" ]]; then
             mkdir -p "${cert_tmp_path}"
             chmod 744 "${cert_tmp_path}"
@@ -579,7 +653,7 @@ function main() {
                 common_logger "Wazuh indexer certificates created."
             fi
             if cert_generateFilebeatcertificates; then
-                common_logger "Wazuh server certificates created."
+                common_logger "Wazuh Filebeat certificates created."
             fi
             if cert_generateDashboardcertificates; then
                 common_logger "Wazuh dashboard certificates created."
@@ -614,7 +688,7 @@ function main() {
             if [ ${#server_node_names[@]} -gt 0 ]; then
                 cert_checkRootCA
                 cert_generateFilebeatcertificates
-                common_logger "Wazuh server certificates created."
+                common_logger "Wazuh Filebeat certificates created."
                 cert_cleanFiles
                 cert_setpermisions
                 eval "mv ${cert_tmp_path} ${base_path}/wazuh-certificates ${debug}"
@@ -643,8 +717,19 @@ function main() {
     fi
 
 }
-# ------------ certVariables.sh ------------ 
+function common_checkAptLock() {
 
+    attempt=0
+    seconds=30
+    max_attempts=10
+
+    while fuser "${apt_lockfile}" >/dev/null 2>&1 && [ "${attempt}" -lt "${max_attempts}" ]; do
+        attempt=$((attempt+1))
+        common_logger "Another process is using APT. Waiting for it to release the lock. Next retry in ${seconds} seconds (${attempt}/${max_attempts})"
+        sleep "${seconds}"
+    done
+
+}
 function common_logger() {
 
     now=$(date +'%d/%m/%Y %H:%M:%S')
@@ -680,7 +765,7 @@ function common_logger() {
     fi
 
     if [ -z "${debugLogger}" ] || { [ -n "${debugLogger}" ] && [ -n "${debugEnabled}" ]; }; then
-        if [ "$EUID" -eq 0 ] && [ -z "${nolog}" ]; then
+        if [ -z "${nolog}" ] && { [ "$EUID" -eq 0 ] || [[ "$(basename "$0")" =~ $cert_tool_script_name ]]; }; then
             printf "%s\n" "${now} ${mtype} ${message}" | tee -a ${logfile}
         else
             printf "%b\n" "${now} ${mtype} ${message}"
@@ -690,56 +775,68 @@ function common_logger() {
 }
 function common_checkRoot() {
 
+    common_logger -d "Checking root permissions."
     if [ "$EUID" -ne 0 ]; then
         echo "This script must be run as root."
         exit 1;
     fi
 
+    common_logger -d "Checking sudo package."
+    if ! command -v sudo > /dev/null; then
+        common_logger -e "The sudo package is not installed and it is necessary for the installation."
+        exit 1;
+    fi
 }
 function common_checkInstalled() {
 
+    common_logger -d "Checking Wazuh installation."
     wazuh_installed=""
     indexer_installed=""
     filebeat_installed=""
     dashboard_installed=""
 
     if [ "${sys_type}" == "yum" ]; then
-        wazuh_installed=$(yum list installed 2>/dev/null | grep wazuh-manager)
+        eval "rpm -q wazuh-manager --quiet && wazuh_installed=1"
     elif [ "${sys_type}" == "apt-get" ]; then
         wazuh_installed=$(apt list --installed  2>/dev/null | grep wazuh-manager)
     fi
 
     if [ -d "/var/ossec" ]; then
+        common_logger -d "There are Wazuh remaining files."
         wazuh_remaining_files=1
     fi
 
     if [ "${sys_type}" == "yum" ]; then
-        indexer_installed=$(yum list installed 2>/dev/null | grep wazuh-indexer)
+        eval "rpm -q wazuh-indexer --quiet && indexer_installed=1"
+
     elif [ "${sys_type}" == "apt-get" ]; then
         indexer_installed=$(apt list --installed 2>/dev/null | grep wazuh-indexer)
     fi
 
     if [ -d "/var/lib/wazuh-indexer/" ] || [ -d "/usr/share/wazuh-indexer" ] || [ -d "/etc/wazuh-indexer" ] || [ -f "${base_path}/search-guard-tlstool*" ]; then
+        common_logger -d "There are Wazuh indexer remaining files."
         indexer_remaining_files=1
     fi
 
     if [ "${sys_type}" == "yum" ]; then
-        filebeat_installed=$(yum list installed 2>/dev/null | grep filebeat)
+        eval "rpm -q filebeat --quiet && filebeat_installed=1"
     elif [ "${sys_type}" == "apt-get" ]; then
         filebeat_installed=$(apt list --installed  2>/dev/null | grep filebeat)
     fi
 
     if [ -d "/var/lib/filebeat/" ] || [ -d "/usr/share/filebeat" ] || [ -d "/etc/filebeat" ]; then
+        common_logger -d "There are Filebeat remaining files."
         filebeat_remaining_files=1
     fi
 
     if [ "${sys_type}" == "yum" ]; then
-        dashboard_installed=$(yum list installed 2>/dev/null | grep wazuh-dashboard)
+        eval "rpm -q wazuh-dashboard --quiet && dashboard_installed=1"
     elif [ "${sys_type}" == "apt-get" ]; then
         dashboard_installed=$(apt list --installed  2>/dev/null | grep wazuh-dashboard)
     fi
 
     if [ -d "/var/lib/wazuh-dashboard/" ] || [ -d "/usr/share/wazuh-dashboard" ] || [ -d "/etc/wazuh-dashboard" ] || [ -d "/run/wazuh-dashboard/" ]; then
+        common_logger -d "There are Wazuh dashboard remaining files."
         dashboard_remaining_files=1
     fi
 
@@ -749,17 +846,20 @@ function common_checkSystem() {
     if [ -n "$(command -v yum)" ]; then
         sys_type="yum"
         sep="-"
+        common_logger -d "YUM package manager will be used."
     elif [ -n "$(command -v apt-get)" ]; then
         sys_type="apt-get"
         sep="="
+        common_logger -d "APT package manager will be used."
     else
-        common_logger -e "Couldn'd find type of system"
+        common_logger -e "Couldn't find YUM or APT package manager. Try installing the one corresponding to your operating system and then, launch the installation assistant again."
         exit 1
     fi
 
 }
 function common_checkWazuhConfigYaml() {
 
+    common_logger -d "Checking Wazuh YAML configuration file."
     filecorrect=$(cert_parseYaml "${config_file}" | grep -Ev '^#|^\s*$' | grep -Pzc "\A(\s*(nodes_indexer__name|nodes_indexer__ip|nodes_server__name|nodes_server__ip|nodes_server__node_type|nodes_dashboard__name|nodes_dashboard__ip)=.*?)+\Z")
     if [[ "${filecorrect}" -ne 1 ]]; then
         common_logger -e "The configuration file ${config_file} does not have a correct format."
@@ -767,24 +867,57 @@ function common_checkWazuhConfigYaml() {
     fi
 
 }
+function common_curl() {
+
+    if [ -n "${curl_has_connrefused}" ]; then
+        eval "curl $@ --retry-connrefused"
+        e_code="${PIPESTATUS[0]}"
+    else
+        retries=0
+        eval "curl $@"
+        e_code="${PIPESTATUS[0]}"
+        while [ "${e_code}" -eq 7 ] && [ "${retries}" -ne 12 ]; do
+            retries=$((retries+1))
+            sleep 5
+            eval "curl $@"
+            e_code="${PIPESTATUS[0]}"
+        done
+    fi
+    return "${e_code}"
+
+}
 function common_remove_gpg_key() {
-    
+
+    common_logger -d "Removing GPG key from system."
     if [ "${sys_type}" == "yum" ]; then
         if { rpm -q gpg-pubkey --qf '%{NAME}-%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' | grep "Wazuh"; } >/dev/null ; then
             key=$(rpm -q gpg-pubkey --qf '%{NAME}-%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' | grep "Wazuh Signing Key" | awk '{print $1}' )
             rpm -e "${key}"
         else
-            common_logger "Wazuh GPG key was not found in the system."
+            common_logger "Wazuh GPG key not found in the system"
             return 1
         fi
     elif [ "${sys_type}" == "apt-get" ]; then
         if [ -f "/usr/share/keyrings/wazuh.gpg" ]; then
-            rm -rf "/usr/share/keyrings/wazuh.gpg"
+            rm -rf "/usr/share/keyrings/wazuh.gpg" "${debug}"
         else
-            common_logger "Wazuh GPG key was not found in the system"
+            common_logger "Wazuh GPG key not found in the system"
             return 1
         fi
     fi
+
+}
+function common_checkYumLock() {
+
+    attempt=0
+    seconds=30
+    max_attempts=10
+
+    while [ -f "${yum_lockfile}" ] && [ "${attempt}" -lt "${max_attempts}" ]; do
+        attempt=$((attempt+1))
+        common_logger "Another process is using YUM. Waiting for it to release the lock. Next retry in ${seconds} seconds (${attempt}/${max_attempts})"
+        sleep "${seconds}"
+    done
 
 }
 
