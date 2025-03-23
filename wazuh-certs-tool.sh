@@ -16,11 +16,11 @@ cert_tmp_path="/tmp/wazuh-certificates"
 debug=">> ${logfile} 2>&1"
 readonly cert_tool_script_name=".*certs.*\.sh"
 
-# ------------ certVariables.sh ------------
+# ------------ certVariables.sh ------------ 
 
-# ------------ certFunctions.sh ------------
+# ------------ certFunctions.sh ------------ 
 function cert_cleanFiles() {
-
+    
     common_logger -d "Cleaning certificate files."
     eval "rm -f ${cert_tmp_path}/*.csr ${debug}"
     eval "rm -f ${cert_tmp_path}/*.srl ${debug}"
@@ -122,7 +122,7 @@ function cert_generateCertificateconfiguration() {
 
         [alt_names]
         IP.1 = cip
-        EOF
+	EOF
 
 
     conf="$(awk '{sub("CN = cname", "CN = '"${1}"'")}1' "${cert_tmp_path}/${1}.conf")"
@@ -208,7 +208,7 @@ function cert_generateDashboardcertificates() {
 function cert_generateRootCAcertificate() {
 
     common_logger "Generating the root certificate."
-    cert_executeAndValidate "openssl req -x509 -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/root-ca.key -out ${cert_tmp_path}/root-ca.pem -batch -subj '/OU=Security/O=DC-Network/L=Ahmedabad/' -days 3650"
+    cert_executeAndValidate "openssl req -x509 -new -nodes -newkey rsa:2048 -keyout ${cert_tmp_path}/root-ca.key -out ${cert_tmp_path}/root-ca.pem -batch -subj '/OU=Security/O=DC-Networks/L=Ahmedabad/' -days 3650"
 
 }
 function cert_parseYaml() {
@@ -227,7 +227,7 @@ function cert_parseYaml() {
 
     local s='[[:space:]]*' sm='[ \t]*' w='[a-zA-Z0-9_]*' fs=${fs:-$(echo @|tr @ '\034')} i=${i:-  }
     cat $1 2>/dev/null | \
-    awk -F$fs "{multi=0;
+    awk -F$fs "{multi=0; 
         if(match(\$0,/$sm\|$sm$/)){multi=1; sub(/$sm\|$sm$/,\"\");}
         if(match(\$0,/$sm>$sm$/)){multi=2; sub(/$sm>$sm$/,\"\");}
         while(multi>0){
@@ -326,7 +326,7 @@ function cert_parseYaml() {
 
 }
 function cert_checkPrivateIp() {
-
+    
     local ip=$1
     common_logger -d "Checking if ${ip} is private."
 
@@ -380,25 +380,25 @@ function cert_readConfig() {
         done
 
         unique_names=($(echo "${indexer_node_names[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_names[@]}" -ne "${#indexer_node_names[@]}" ]; then
+        if [ "${#unique_names[@]}" -ne "${#indexer_node_names[@]}" ]; then 
             common_logger -e "Duplicated indexer node names."
             exit 1
         fi
 
         unique_ips=($(echo "${indexer_node_ips[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_ips[@]}" -ne "${#indexer_node_ips[@]}" ]; then
+        if [ "${#unique_ips[@]}" -ne "${#indexer_node_ips[@]}" ]; then 
             common_logger -e "Duplicated indexer node ips."
             exit 1
         fi
 
         unique_names=($(echo "${server_node_names[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_names[@]}" -ne "${#server_node_names[@]}" ]; then
+        if [ "${#unique_names[@]}" -ne "${#server_node_names[@]}" ]; then 
             common_logger -e "Duplicated Wazuh server node names."
             exit 1
         fi
 
         unique_ips=($(echo "${server_node_ips[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-        if [ "${#unique_ips[@]}" -ne "${#server_node_ips[@]}" ]; then
+        if [ "${#unique_ips[@]}" -ne "${#server_node_ips[@]}" ]; then 
             common_logger -e "Duplicated Wazuh server node ips."
             exit 1
         fi
@@ -464,7 +464,7 @@ function cert_convertCRLFtoLF() {
     eval "mv /tmp/wazuh-install-files/new_config.yml $1 ${debug}"
 }
 
-# ------------ certMain.sh ------------
+# ------------ certMain.sh ------------ 
 function getHelp() {
 
     echo -e ""
@@ -534,7 +534,7 @@ function main() {
                             common_logger -e "You have not entered a root-ca.pem"
                             exit 1
                         else
-                            common_logger -e "You have not entered a root-ca.key"
+                            common_logger -e "You have not entered a root-ca.key" 
                             exit 1
                         fi
                     fi
@@ -624,7 +624,7 @@ function main() {
                 exit 1
             fi
         fi
-
+        
         if [[ ! -d "${cert_tmp_path}" ]]; then
             mkdir -p "${cert_tmp_path}"
             chmod 744 "${cert_tmp_path}"
@@ -782,7 +782,7 @@ function common_checkRoot() {
     fi
 
     common_logger -d "Checking sudo package."
-    if ! command -v sudo > /dev/null; then
+    if ! command -v sudo > /dev/null; then 
         common_logger -e "The sudo package is not installed and it is necessary for the installation."
         exit 1;
     fi
